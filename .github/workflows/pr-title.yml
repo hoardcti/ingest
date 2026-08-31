@@ -1,0 +1,58 @@
+name: PR Title
+
+# Repositories squash-merge with `squash_merge_commit_title: PR_TITLE`, so the
+# pull request title becomes the commit message on the default branch. Without
+# this check nothing enforces the Conventional Commits format that
+# CONTRIBUTING.md requires — and a clean history is what makes automated
+# changelogs and `git bisect` worth anything later.
+#
+# This lives in its own workflow because it needs the `edited` event type:
+# retitling a pull request must re-run the check, but should not re-run the
+# whole CI suite.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint-title:
+    name: Check title format
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      # Reads the title straight from the event payload, so this works on fork
+      # pull requests under the plain `pull_request` trigger.
+      - name: Validate Conventional Commits format
+        uses: amannn/action-semantic-pull-request@48f256284bd46cdaab1048c3721360e808335d50 # v6.1.1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Keep in step with CONTRIBUTING.md.
+          types: |
+            feat
+            fix
+            docs
+            refactor
+            test
+            chore
+            ci
+            perf
+            build
+            revert
+          requireScope: false
+          # Sentence case or lower case, but not SHOUTING or Title Case.
+          subjectPattern: ^(?![A-Z]).+[^.]$
+          subjectPatternError: |
+            The subject "{subject}" is invalid for the "{type}" type.
+            It must start with a lower-case letter and must not end with a full stop.
+          # The whole point is that the squashed commit subject stays readable.
+          # GitHub truncates around 72 characters in most views.
+          headerPattern: '^(\w+)(?:\(([\w$.\-*/ ]*)\))?!?: (.+)$'

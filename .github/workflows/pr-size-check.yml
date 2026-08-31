@@ -1,0 +1,181 @@
+name: PR Size Check
+
+# Uses `pull_request_target`, not `pull_request`, so that pull requests from
+# forks get a writable token and can actually be labelled and commented on.
+# Under `pull_request` the token is read-only for forks and every API call here
+# fails with 403 -- which, on an open-source repository, is the common case.
+#
+# SECURITY: `pull_request_target` runs in the context of the BASE repository
+# with a writable token. This workflow must therefore NEVER check out, build, or
+# execute pull request code. It only reads metadata through the API. Do not add
+# an actions/checkout step here.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions: {}
+
+# A rapid series of pushes would otherwise race two runs against the same
+# comment -- one deleting it while the other updates it (404) or both creating
+# duplicates.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  MAX_ADDITIONS: "1000"
+  MAX_DELETIONS: "1000"
+  MAX_TOTAL_CHANGES: "1500"
+  LABEL_NAME: "large-pr"
+  # Generated and vendored files are not hand-reviewed, so they should not count
+  # toward a limit that exists to keep review tractable.
+  EXCLUDE_PATH_REGEX: "(^|/)(vendor|node_modules|third_party|dist|build)/|(^|/)(package-lock\\.json|yarn\\.lock|pnpm-lock\\.yaml|poetry\\.lock|Cargo\\.lock|go\\.sum|composer\\.lock|Gemfile\\.lock|uv\\.lock)$|\\.(min\\.js|min\\.css|map|pb\\.go|generated\\.go|snap)$"
+
+jobs:
+  size-check:
+    name: Check PR size
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Evaluate PR size
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7.1.0
+        with:
+          script: |
+            const maxAdditions = parseInt(process.env.MAX_ADDITIONS, 10);
+            const maxDeletions = parseInt(process.env.MAX_DELETIONS, 10);
+            const maxTotal = parseInt(process.env.MAX_TOTAL_CHANGES, 10);
+            const labelName = process.env.LABEL_NAME;
+            const excludeRe = new RegExp(process.env.EXCLUDE_PATH_REGEX);
+
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const prNumber = context.payload.pull_request.number;
+
+            // Count from the file list rather than pr.additions/deletions so
+            // that generated and vendored paths can be excluded.
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner, repo, pull_number: prNumber, per_page: 100,
+            });
+
+            let additions = 0;
+            let deletions = 0;
+            let excludedFiles = 0;
+            let excludedChanges = 0;
+
+            for (const file of files) {
+              if (excludeRe.test(file.filename)) {
+                excludedFiles += 1;
+                excludedChanges += file.additions + file.deletions;
+                continue;
+              }
+              additions += file.additions;
+              deletions += file.deletions;
+            }
+
+            const total = additions + deletions;
+            core.info(
+              `Reviewable size: +${additions} / -${deletions} (total ${total}); ` +
+              `excluded ${excludedFiles} generated/vendored file(s) totalling ${excludedChanges} changes.`
+            );
+
+            const tooBig =
+              additions > maxAdditions ||
+              deletions > maxDeletions ||
+              total > maxTotal;
+
+            const commentMarker = "<!-- pr-size-check -->";
+
+            // Find any previous comment left by this check.
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner, repo, issue_number: prNumber, per_page: 100,
+            });
+            const existingComment = comments.find(
+              (c) => c.body && c.body.includes(commentMarker)
+            );
+
+            // Every mutating call below is wrapped: a concurrent run may have
+            // already changed the label or removed the comment, and losing that
+            // race should not fail the check.
+            const tolerate = async (fn, ...codes) => {
+              try {
+                return await fn();
+              } catch (e) {
+                if (codes.includes(e.status)) return null;
+                throw e;
+              }
+            };
+
+            if (!tooBig) {
+              // PR shrank back under the limits: clean up label and stale comment.
+              await tolerate(() => github.rest.issues.removeLabel({
+                owner, repo, issue_number: prNumber, name: labelName,
+              }), 404);
+              if (existingComment) {
+                await tolerate(() => github.rest.issues.deleteComment({
+                  owner, repo, comment_id: existingComment.id,
+                }), 404);
+              }
+              core.info("PR size is within limits.");
+              return;
+            }
+
+            // Make sure the label exists before applying it.
+            const label = await tolerate(() => github.rest.issues.getLabel({
+              owner, repo, name: labelName,
+            }), 404);
+            if (!label) {
+              // 422 => another run created it first.
+              await tolerate(() => github.rest.issues.createLabel({
+                owner,
+                repo,
+                name: labelName,
+                color: "d93f0b",
+                description: "This pull request is very large and hard to review",
+              }), 422);
+            }
+
+            await github.rest.issues.addLabels({
+              owner, repo, issue_number: prNumber, labels: [labelName],
+            });
+
+            const excludedNote = excludedFiles
+              ? `\n_Excluded ${excludedFiles} generated/vendored file(s) ` +
+                `(${excludedChanges} changes) from these totals._`
+              : "";
+
+            const body = [
+              commentMarker,
+              "## :warning: This pull request is very large",
+              "",
+              `| Metric | Value | Limit |`,
+              `| --- | --- | --- |`,
+              `| Additions | ${additions} | ${maxAdditions} |`,
+              `| Deletions | ${deletions} | ${maxDeletions} |`,
+              `| Total changes | ${total} | ${maxTotal} |`,
+              excludedNote,
+              "",
+              "Large pull requests are very hard to review properly. " +
+                "Please consider splitting this into smaller, focused pull requests.",
+              "",
+              "_This is only a warning — it does not block the pull request._",
+            ].join("\n");
+
+            if (existingComment) {
+              const updated = await tolerate(() => github.rest.issues.updateComment({
+                owner, repo, comment_id: existingComment.id, body,
+              }), 404);
+              if (updated) return;
+            }
+            await github.rest.issues.createComment({
+              owner, repo, issue_number: prNumber, body,
+            });
+
+            // Warning annotation only — the job still succeeds.
+            core.warning(
+              `PR exceeds size limits (+${additions}/-${deletions}). Labeled "${labelName}" and commented.`
+            );

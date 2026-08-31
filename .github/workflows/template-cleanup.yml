@@ -1,0 +1,113 @@
+name: Template Cleanup
+
+# One-shot bootstrap for repositories created from this template.
+#
+# GitHub's "Use this template" copies files verbatim, so a new repository starts
+# with a README describing the template rather than itself — which, in practice,
+# nobody rewrites. This workflow does it on the first push: strips the template
+# banner, substitutes the repository name, removes TEMPLATE.md, and deletes
+# itself. It is a no-op in the template repository and after it has run once.
+#
+# NOTE: this pushes a commit to the default branch, so let it run BEFORE you
+# apply the branch ruleset (step 3 of the TEMPLATE.md checklist). If a ruleset
+# is already in place, the push is rejected — do the cleanup by hand instead,
+# or add this workflow's actor to the ruleset bypass list.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Personalise repository
+    # Never run in the template itself.
+    if: github.repository != 'hoardcti/template'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check whether cleanup is still needed
+        id: check
+        run: |
+          if [ -f TEMPLATE.md ] && grep -q "TEMPLATE:START" README.md; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Template cleanup has already run; nothing to do."
+          fi
+
+      - name: Rewrite README and remove template scaffolding
+        if: steps.check.outputs.needed == 'true'
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+
+          repo_name = os.environ["REPO_NAME"]
+
+          with open("README.md", encoding="utf-8") as handle:
+              content = handle.read()
+
+          # Drop the template-only banner and substitute the repository name.
+          content = re.sub(
+              r"<!-- TEMPLATE:START -->.*?<!-- TEMPLATE:END -->\n*",
+              "",
+              content,
+              flags=re.DOTALL,
+          )
+          content = content.replace("{{REPO_NAME}}", repo_name)
+
+          with open("README.md", "w", encoding="utf-8") as handle:
+              handle.write(content.lstrip("\n"))
+
+          print(f"README.md personalised for {repo_name}.")
+          PY
+
+          rm -f TEMPLATE.md .github/workflows/template-cleanup.yml
+
+      - name: Commit
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit."
+            exit 0
+          fi
+          git commit -m "chore: initialise repository from template
+
+          Removes the template banner and scaffolding, and personalises the
+          README for this repository. See the hoardcti/template checklist for
+          the manual steps that remain (repository settings and branch rules)."
+          git push
+
+      - name: Remaining manual steps
+        if: steps.check.outputs.needed == 'true'
+        run: |
+          {
+            echo "## Repository initialised from template"
+            echo ""
+            echo "Automated cleanup is done. These steps are **not** automatic:"
+            echo ""
+            echo "1. Fill in every \`TEMPLATE:\` placeholder — \`grep -rn \"TEMPLATE:\" --exclude-dir=.git .\`"
+            echo "2. Enable secret scanning, push protection, Dependabot, and private vulnerability reporting"
+            echo "3. Apply the branch ruleset to \`main\` (see \`.github/settings.yml\`)"
+            echo "4. Confirm the licence is right for this repository"
+            echo ""
+            echo "The full checklist was in \`TEMPLATE.md\`, which this workflow removed —"
+            echo "it remains at [hoardcti/template](https://github.com/hoardcti/template/blob/main/TEMPLATE.md)."
+          } >> "$GITHUB_STEP_SUMMARY"

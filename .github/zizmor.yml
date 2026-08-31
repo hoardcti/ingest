@@ -1,0 +1,32 @@
+# zizmor configuration — https://docs.zizmor.sh/configuration/
+#
+# zizmor audits GitHub Actions workflows for SECURITY problems (template
+# injection, credential persistence, dangerous triggers). That is a different
+# job from actionlint, which checks correctness; both run in CI.
+#
+# Suppressions below are deliberate and justified. Do not add one without a
+# comment explaining why the finding is not exploitable here — an unexplained
+# suppression is how a real issue gets buried.
+
+rules:
+  dangerous-triggers:
+    ignore:
+      # pr-size-check.yml uses `pull_request_target` on purpose: under
+      # `pull_request`, fork PRs get a read-only token and every labelling and
+      # commenting call fails with 403 — which is the normal contribution path
+      # on an open-source repository.
+      #
+      # The trigger is safe here ONLY because the workflow never checks out,
+      # builds, or executes pull request code; it reads PR metadata through the
+      # API and nothing else. If a checkout step is ever added to that
+      # workflow, this suppression must be removed and the design revisited.
+      - pr-size-check.yml
+
+  artipacked:
+    ignore:
+      # template-cleanup.yml must keep the checkout credentials: it pushes the
+      # personalisation commit back to the default branch. It runs once, only in
+      # repositories generated from this template, and deletes itself afterwards.
+      # It also uploads no artifacts, so there is nothing for the persisted
+      # credential to leak into.
+      - template-cleanup.yml

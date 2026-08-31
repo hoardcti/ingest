@@ -1,0 +1,25 @@
+# Code owners are requested for review automatically, and — when the branch
+# ruleset requires review from Code Owners — must approve before merge.
+#
+# Order matters: the LAST matching pattern wins. Put broad rules first and
+# narrow, higher-sensitivity rules last.
+#
+# TEMPLATE: replace these teams with the real ones for your repository. Every
+# team listed must have write access, or GitHub silently skips the assignment.
+
+# Default owner for everything not matched below.
+*                       @hoardcti/maintainers
+
+# CI, automation, and anything that runs with a privileged token. Changes here
+# can weaken every other control in the repository.
+/.github/               @hoardcti/security @hoardcti/maintainers
+/.github/workflows/     @hoardcti/security
+/.github/scripts/       @hoardcti/security
+
+# Security posture and policy.
+/SECURITY.md            @hoardcti/security
+/CODEOWNERS             @hoardcti/security
+/.github/CODEOWNERS     @hoardcti/security
+
+# Licensing changes need an explicit decision, not a drive-by edit.
+/LICENSE                @hoardcti/maintainers

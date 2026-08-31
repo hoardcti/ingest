@@ -1,0 +1,63 @@
+name: OpenSSF Scorecard
+
+# Grades this repository against known supply-chain criteria — branch
+# protection, pinned dependencies, dangerous workflow patterns, signed
+# releases, token permissions — and publishes results to the Security tab.
+#
+# For an open-source security vendor this is close to table stakes: enterprise
+# consumers evaluating hoardCTI can look the score up themselves, and it is a
+# standing regression check on the hardening this template applies.
+#
+# Add the badge to README.md once the first run completes:
+#   [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/OWNER/REPO/badge)](https://scorecard.dev/viewer/?uri=github.com/OWNER/REPO)
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Weekly, Monday 05:23 UTC — after the secret scan, off the hour.
+    - cron: "23 5 * * 1"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Public repositories only: results are published to a public API, and the
+    # badge depends on that. Remove this guard and `publish_results` together
+    # if a repository is private.
+    if: github.event.repository.visibility == 'public'
+    permissions:
+      # Upload the SARIF result to code scanning.
+      security-events: write
+      # Publish results to the OpenSSF API via Sigstore-signed attestation.
+      id-token: write
+      contents: read
+      actions: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Run analysis
+        uses: ossf/scorecard-action@2d1146689b8cda280b9bc96326124645441f03bc # v2.4.4
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          # Publishing is what enables the badge and lets consumers verify the
+          # score independently. It sends only the score, not repository content.
+          publish_results: true
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          sarif_file: results.sarif

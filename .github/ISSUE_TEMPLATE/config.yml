@@ -1,0 +1,17 @@
+# Blank issues are disabled so that reports arrive with the context needed to
+# act on them, and so security reports are routed privately rather than being
+# disclosed in a public issue.
+blank_issues_enabled: false
+
+# TEMPLATE: repoint both URLs below at this repository — they still reference
+# hoardcti/template, and a wrong security link sends reports to the wrong place.
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/hoardcti/template/security/advisories/new
+    about: >-
+      Never report vulnerabilities in a public issue. Use private vulnerability
+      reporting so the report stays confidential until a fix ships. See SECURITY.md.
+
+  - name: Question or usage help
+    url: https://github.com/hoardcti/template/discussions
+    about: Ask in Discussions — issues are for actionable bugs and feature requests.

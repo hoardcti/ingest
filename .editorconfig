@@ -1,0 +1,50 @@
+# https://editorconfig.org
+# Baseline formatting for every hoardCTI repository. Some editors need a plugin.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+max_line_length = 100
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.{json,json5,jsonc}]
+indent_size = 2
+
+[*.{js,jsx,ts,tsx,css,scss,html}]
+indent_size = 2
+
+[*.{py,pyi}]
+indent_size = 4
+
+[*.go]
+indent_style = tab
+
+[*.{md,markdown}]
+indent_size = 2
+# Two trailing spaces are a hard line break in Markdown.
+trim_trailing_whitespace = false
+
+[Makefile]
+indent_style = tab
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+# Vendored and generated content is not ours to reformat.
+[{vendor,third_party,node_modules}/**]
+indent_style = unset
+indent_size = unset
+trim_trailing_whitespace = unset
+insert_final_newline = unset
+
+[LICENSE]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
+max_line_length = unset

@@ -1,0 +1,47 @@
+version: 2
+
+updates:
+  # Actions are pinned to commit SHAs for supply-chain safety, which means they
+  # cannot drift on their own — and will never receive a security fix unless
+  # something bumps them. Dependabot is that something. It understands the
+  # `# vX.Y.Z` comment next to each SHA and keeps it accurate.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "ci"
+    groups:
+      actions-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # TEMPLATE: uncomment and adjust the ecosystem(s) this repository actually
+  # uses. Leaving unused ecosystems enabled produces noisy Dependabot errors.
+  #
+  # - package-ecosystem: "pip"        # or "uv", "poetry"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   open-pull-requests-limit: 10
+  #   labels: ["dependencies"]
+  #   groups:
+  #     minor-patch:
+  #       update-types: ["minor", "patch"]
+  #
+  # - package-ecosystem: "npm"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #
+  # - package-ecosystem: "docker"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"

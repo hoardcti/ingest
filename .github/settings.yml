@@ -1,0 +1,160 @@
+# Repository configuration as code.
+#
+# The README claims this template provides "version control rulesets" and
+# "approval workflows". Those are repository SETTINGS, not files, and GitHub's
+# template mechanism does not copy them — so without something like this they
+# exist only as tribal knowledge. This file records the required configuration
+# in a reviewable, diffable form.
+#
+# APPLYING IT
+#   Automatically: install the Probot "Settings" app (https://github.com/apps/settings)
+#     on the hoardcti organisation. It applies this file on every push to the
+#     default branch. Note the app manages branch *protection*; the rulesets
+#     described at the bottom must be applied through the API or the UI.
+#   Manually: use it as the checklist for Settings → General / Rules / Collaborators.
+#
+# If the app is not installed, this file is documentation. Keep it accurate
+# anyway — it is the only written record of what a compliant repository looks like.
+
+repository:
+  # TEMPLATE: name, description, and topics for this repository.
+  # name: my-repo
+  # description: One sentence describing the repository.
+  # topics: threat-intelligence, security, cti
+  homepage: ""
+
+  private: false
+  has_issues: true
+  has_projects: false
+  has_wiki: false
+  # Enable if ISSUE_TEMPLATE/config.yml links to Discussions.
+  has_discussions: true
+  has_downloads: true
+
+  default_branch: main
+
+  # Squash-only keeps main's history one commit per reviewed change, which
+  # makes the full-tree secret scan and any later bisect tractable.
+  allow_squash_merge: true
+  allow_merge_commit: false
+  allow_rebase_merge: false
+  squash_merge_commit_title: PR_TITLE
+  squash_merge_commit_message: PR_BODY
+
+  delete_branch_on_merge: true
+  allow_auto_merge: true
+  allow_update_branch: true
+
+  # Security features. These are the primary controls; the bundled secret
+  # scanner workflow is a secondary safety net.
+  security_and_analysis:
+    secret_scanning:
+      status: enabled
+    secret_scanning_push_protection:
+      status: enabled
+    dependabot_security_updates:
+      status: enabled
+
+labels:
+  - name: bug
+    color: d73a4a
+    description: Something is not working
+  - name: enhancement
+    color: a2eeef
+    description: New feature or request
+  - name: security
+    color: b60205
+    description: Security-relevant change or report
+  - name: dependencies
+    color: 0366d6
+    description: Dependency updates
+  - name: github-actions
+    color: 000000
+    description: CI and workflow changes
+  - name: documentation
+    color: 0075ca
+    description: Documentation only
+  - name: triage
+    color: fbca04
+    description: Awaiting maintainer triage
+  - name: large-pr
+    color: d93f0b
+    description: This pull request is very large and hard to review
+  - name: good first issue
+    color: 7057ff
+    description: Suitable for a first-time contributor
+
+# TEMPLATE: replace with the real teams. Teams referenced by .github/CODEOWNERS
+# must have at least `push` here, or GitHub silently drops the ownership rule.
+teams:
+  - name: maintainers
+    permission: push
+  - name: security
+    permission: push
+  - name: admins
+    permission: admin
+
+branches:
+  - name: main
+    protection:
+      required_pull_request_reviews:
+        required_approving_review_count: 1
+        # A new push invalidates prior approvals — otherwise a reviewed PR can
+        # be rewritten after approval and merged unreviewed.
+        dismiss_stale_reviews: true
+        require_code_owner_reviews: true
+      required_status_checks:
+        strict: true
+        # Job NAMES, not workflow file names. Update if the names change.
+        #
+        # Only unconditional jobs are listed. Do NOT add the language-conditional
+        # jobs ("Lint Python", "Audit Python dependencies") — they are gated on
+        # `needs.detect`, and how GitHub treats a never-running required check
+        # varies enough that it risks blocking pull requests permanently in
+        # repositories that contain no Python.
+        contexts:
+          - "Scan pull request diff"
+          - "Lint workflows"
+          - "Audit workflow security"
+          - "Review dependency changes"
+          - "Check title format"
+          - "Secret scanner tests"
+          - "Check PR size"
+      enforce_admins: false
+      required_linear_history: true
+      required_conversation_resolution: true
+      allow_force_pushes: false
+      allow_deletions: false
+      restrictions: null
+
+# ---------------------------------------------------------------------------
+# Rulesets
+# ---------------------------------------------------------------------------
+# Rulesets supersede branch protection and are what the org should standardise
+# on: they can be defined once at the ORGANISATION level and applied to every
+# repository, which branch protection cannot. The Probot app does not manage
+# them — apply org-wide under Organisation settings → Repository rulesets, or
+# via `POST /orgs/hoardcti/rulesets`.
+#
+# Required org ruleset, targeting the default branch of all repositories:
+#
+#   Branch rules
+#     - Restrict deletions
+#     - Block force pushes
+#     - Require linear history
+#     - Require a pull request before merging
+#         required_approving_review_count: 1
+#         dismiss_stale_reviews_on_push: true
+#         require_code_owner_review: true
+#         require_last_push_approval: true      # the pusher cannot self-approve
+#         required_review_thread_resolution: true
+#     - Require status checks to pass
+#         strict_required_status_checks_policy: true
+#         Scan pull request diff / Lint workflows / Secret scanner tests / Check PR size
+#     - Require signed commits                  # verifies authorship of what we publish
+#
+#   Bypass list: none. Admin bypass defeats the point of the control; grant a
+#   time-boxed exception when genuinely needed instead.
+#
+# Recommended tag ruleset, targeting `v*` (releases are what consumers pull):
+#     - Restrict deletions, Block force pushes, Restrict updates

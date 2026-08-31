@@ -1,0 +1,54 @@
+# Tooling configuration for Python repositories created from this template.
+#
+# This file carries TOOL settings only — no build system or project metadata —
+# so it is safe to keep in any repository that contains Python, and safe to
+# delete outright in one that does not.
+#
+# TEMPLATE: if this repository is a packaged Python project, add the
+# [build-system] and [project] tables above the tool configuration.
+
+[tool.ruff]
+# Matches max_line_length in .editorconfig.
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # import sorting
+    "B",    # flake8-bugbear: likely bugs
+    "UP",   # pyupgrade: outdated syntax
+    "RUF",  # ruff-specific rules
+    "ISC",  # implicit string concatenation (catches missing commas in lists)
+    "S",    # flake8-bandit: security
+]
+ignore = [
+    # Line length is the formatter's job; flagging it again just adds noise for
+    # long string literals and URLs that cannot be wrapped.
+    "E501",
+    # `subprocess` use is inherent to a tool that shells out to git.
+    "S404",
+    # ISC001 conflicts with `ruff format`, which produces the very single-line
+    # concatenations it objects to. ISC002-004 stay enabled — ISC004 is the one
+    # that catches a missing comma in a list of strings.
+    "ISC001",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately use assert, and construct fake credentials on purpose.
+"**/test_*.py" = ["S101", "S105", "S106"]
+# The scanner shells out to git with fixed, non-user-controlled argument lists.
+".github/scripts/secret_scan.py" = ["S603", "S607"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["secret_scan"]
+
+# TEMPLATE: mypy is not wired into CI by default because it needs per-project
+# configuration to be useful rather than noisy. Enable it once this repository
+# has types worth checking, then add the job in .github/workflows/ci.yml.
+#
+# [tool.mypy]
+# python_version = "3.12"
+# warn_unused_ignores = true
+# disallow_untyped_defs = true
