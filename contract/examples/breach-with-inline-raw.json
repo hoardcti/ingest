@@ -1,0 +1,37 @@
+{
+  "schema_version": "1.0",
+  "source": "hibp",
+  "collected_at": "2026-08-30T22:30:00Z",
+  "raw": {
+    "media_type": "application/json",
+    "encoding": "utf8",
+    "data": "{\"Name\":\"LinkedIn\",\"BreachDate\":\"2021-06-22\",\"PwnCount\":700000000}"
+  },
+  "default_context": {
+    "tlp": "clear",
+    "tags": ["credential-exposure"]
+  },
+  "records": [
+    {
+      "kind": "breach",
+      "breach": {
+        "name": "LinkedIn",
+        "domain": "LinkedIn.com",
+        "description": "Scraped profile data for approximately 700 million LinkedIn users was offered for sale.",
+        "breach_date": "2021-06-22",
+        "disclosed_at": "2021-06-29T00:00:00Z",
+        "record_count": 700000000,
+        "data_classes": ["Email addresses", "Names", "Geographic locations", "Job titles"],
+        "verified": true
+      }
+    }
+  ],
+  "relationships": [
+    {
+      "source": { "kind": "indicator", "type": "email", "value": "Someone@Example.com" },
+      "target": { "kind": "breach", "value": "linkedin-2021" },
+      "type": "exposed-in",
+      "confidence": 0.9
+    }
+  ]
+}

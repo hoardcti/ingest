@@ -1,0 +1,307 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schema.hoardcti.org/envelope-v1.schema.json",
+  "title": "HoardCTI ingest envelope",
+  "description": "The one contract between scrapers and the ingest service. Scrapers report what they saw; they do not interpret it. All canonicalisation happens once, inside the ingest service.",
+  "type": "object",
+  "required": ["schema_version", "source", "collected_at", "records"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "description": "Envelope schema version, MAJOR.MINOR. The ingest service accepts any 1.x envelope; a 2.x envelope is rejected rather than guessed at.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "source": {
+      "description": "Slug of the configured source, matching source.slug in the database.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9]+(?:[-_.][a-z0-9]+)*$"
+    },
+    "source_run_id": {
+      "description": "Identifier for the collector run that produced this envelope. Groups envelopes from one execution so a bad run can be traced or reverted.",
+      "type": "string",
+      "maxLength": 128
+    },
+    "collected_at": {
+      "description": "When the collector fetched the payload. Used as the default observed_at for records that do not carry their own.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "content_hash": {
+      "description": "Hash of the untouched upstream payload, as 'sha256:<hex>'. Provenance and the archive key, NOT the idempotency key -- the ingest service deduplicates on the digest of the delivered message, so an unchanged blocklist collected again tomorrow still records new sightings. Computed by the ingest service when 'raw' is supplied inline and this is omitted.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "raw_ref": {
+      "description": "Object storage key for the archived upstream payload, set by the scraper if it archived the payload itself. If absent and 'raw' is present, the ingest service archives the payload and fills this in.",
+      "type": "string",
+      "maxLength": 1024
+    },
+    "raw": {
+      "description": "The untouched upstream payload, for the ingest service to archive. Only for small payloads -- anything over 1 MiB should be archived by the collector, which then sets raw_ref instead.",
+      "type": "object",
+      "required": ["data"],
+      "additionalProperties": false,
+      "properties": {
+        "media_type": {
+          "type": "string",
+          "maxLength": 255,
+          "default": "application/octet-stream"
+        },
+        "encoding": {
+          "description": "How 'data' is encoded. 'base64' for binary or anything that is not valid UTF-8.",
+          "type": "string",
+          "enum": ["utf8", "base64"],
+          "default": "utf8"
+        },
+        "data": {
+          "type": "string"
+        }
+      }
+    },
+    "default_context": {
+      "description": "Context applied to every record that does not override it. Saves repeating tlp and tags on ten thousand rows from one feed.",
+      "$ref": "#/$defs/context"
+    },
+    "records": {
+      "description": "The observations in this envelope. One envelope carrying many records is the intended shape -- the ingest service writes a batch in a single transaction using the COPY protocol.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 50000,
+      "items": { "$ref": "#/$defs/record" }
+    },
+    "relationships": {
+      "description": "Edges between entities. Endpoints are given as raw values and canonicalised by the ingest service using the same rules as records, so a relationship may reference an entity that appears nowhere else in this envelope. Unknown endpoints are created as bare entity rows.",
+      "type": "array",
+      "maxItems": 50000,
+      "items": { "$ref": "#/$defs/relationship" }
+    }
+  },
+
+  "$defs": {
+    "tlp": {
+      "description": "Traffic Light Protocol 2.0 marking.",
+      "type": "string",
+      "enum": ["clear", "green", "amber", "amber+strict", "red"]
+    },
+
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "first_seen": {
+          "description": "When the source first observed this, if it reports that. Not when this envelope was collected.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "last_seen": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "confidence": {
+          "description": "Source confidence, 0.0 to 1.0. Omit rather than guessing -- a fabricated 0.5 is worse than null.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "tags": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "tlp": { "$ref": "#/$defs/tlp" },
+        "attributes": {
+          "description": "Anything else the source said about this observation. Stored verbatim on the sighting; never interpreted by the ingest service.",
+          "type": "object"
+        }
+      }
+    },
+
+    "record": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Which module owns this record. Determines which payload field must be present.",
+          "type": "string",
+          "enum": ["indicator", "cve", "breach"]
+        },
+        "observed_at": {
+          "description": "When the source observed this record. Defaults to the envelope's collected_at.",
+          "type": "string",
+          "format": "date-time"
+        },
+        "context": { "$ref": "#/$defs/context" },
+        "indicator": { "$ref": "#/$defs/indicator" },
+        "cve": { "$ref": "#/$defs/cve" },
+        "breach": { "$ref": "#/$defs/breach" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "indicator" } } },
+          "then": { "required": ["indicator"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "cve" } } },
+          "then": { "required": ["cve"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "breach" } } },
+          "then": { "required": ["breach"] }
+        }
+      ]
+    },
+
+    "indicator": {
+      "description": "An observable. raw_value, not value: a scraper emitting hxxp://evil[.]com is behaving correctly.",
+      "type": "object",
+      "required": ["type", "raw_value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "description": "Observable type. 'auto' asks the ingest service to infer it from the value, for feeds that ship mixed IOC lists without a type column.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "ipv4",
+            "ipv6",
+            "cidr",
+            "domain",
+            "url",
+            "email",
+            "md5",
+            "sha1",
+            "sha256",
+            "sha512"
+          ]
+        },
+        "raw_value": {
+          "description": "Exactly what the feed said, defanging and all.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+
+    "cve": {
+      "type": "object",
+      "required": ["cve_id"],
+      "additionalProperties": false,
+      "properties": {
+        "cve_id": {
+          "description": "CVE identifier. Case is normalised by the ingest service; 'cve-2024-3094' is accepted.",
+          "type": "string",
+          "pattern": "^[Cc][Vv][Ee]-[0-9]{4}-[0-9]{4,}$"
+        },
+        "summary": { "type": "string" },
+        "cvss_score": { "type": "number", "minimum": 0, "maximum": 10 },
+        "cvss_vector": { "type": "string", "maxLength": 255 },
+        "severity": {
+          "type": "string",
+          "enum": ["none", "low", "medium", "high", "critical"]
+        },
+        "epss_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "known_exploited": { "type": "boolean" },
+        "cwe": {
+          "type": "array",
+          "items": { "type": "string", "pattern": "^CWE-[0-9]+$" }
+        },
+        "published_at": { "type": "string", "format": "date-time" },
+        "modified_at": { "type": "string", "format": "date-time" },
+        "refs": {
+          "description": "Reference URLs and advisory links, stored as supplied.",
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    },
+
+    "breach": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "slug": {
+          "description": "Stable identifier for the breach. Derived from name and breach_date by the ingest service when omitted.",
+          "type": "string",
+          "maxLength": 255
+        },
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "domain": { "type": "string", "maxLength": 255 },
+        "description": { "type": "string" },
+        "breach_date": {
+          "description": "Date of the breach itself, not of its disclosure.",
+          "type": "string",
+          "format": "date"
+        },
+        "disclosed_at": { "type": "string", "format": "date-time" },
+        "record_count": { "type": "integer", "minimum": 0 },
+        "data_classes": {
+          "type": "array",
+          "items": { "type": "string", "maxLength": 128 }
+        },
+        "verified": { "type": "boolean" }
+      }
+    },
+
+    "endpoint": {
+      "description": "One end of a relationship, given as a raw value plus the kind that owns it. Canonicalised by the ingest service exactly as a record would be.",
+      "type": "object",
+      "required": ["kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string", "enum": ["indicator", "cve", "breach"] },
+        "type": {
+          "description": "Observable type, when kind is 'indicator'. Defaults to 'auto'.",
+          "type": "string",
+          "enum": [
+            "auto",
+            "ipv4",
+            "ipv6",
+            "cidr",
+            "domain",
+            "url",
+            "email",
+            "md5",
+            "sha1",
+            "sha256",
+            "sha512"
+          ]
+        },
+        "value": { "type": "string", "minLength": 1, "maxLength": 4096 }
+      }
+    },
+
+    "relationship": {
+      "type": "object",
+      "required": ["source", "target", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "source": { "$ref": "#/$defs/endpoint" },
+        "target": { "$ref": "#/$defs/endpoint" },
+        "type": {
+          "description": "Relationship verb. Deliberately small and STIX-flavoured: a curated open list beats an enum you have to migrate every time a module needs a new verb.",
+          "type": "string",
+          "enum": [
+            "indicates",
+            "exploits",
+            "mitigates",
+            "attributed-to",
+            "targets",
+            "related-to",
+            "derived-from",
+            "exposed-in"
+          ]
+        },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "first_seen": { "type": "string", "format": "date-time" },
+        "last_seen": { "type": "string", "format": "date-time" },
+        "metadata": { "type": "object" }
+      }
+    }
+  }
+}

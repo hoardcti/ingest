@@ -23,25 +23,49 @@ updates:
           - "minor"
           - "patch"
 
-  # TEMPLATE: uncomment and adjust the ecosystem(s) this repository actually
-  # uses. Leaving unused ecosystems enabled produces noisy Dependabot errors.
+  # The ingest service is Go. pgx and the AWS SDK are on the path of everything
+  # this service does, so their fixes matter; grouping the minor and patch
+  # updates keeps the pull request volume sane.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "go"
+    commit-message:
+      prefix: "deps"
+    groups:
+      go-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # The runtime base image and the development stack's Postgres and Valkey.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "05:00"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps"
+
+  # TEMPLATE: uncomment if this repository ever grows a Python or Node component.
   #
   # - package-ecosystem: "pip"        # or "uv", "poetry"
   #   directory: "/"
   #   schedule:
   #     interval: "weekly"
-  #   open-pull-requests-limit: 10
-  #   labels: ["dependencies"]
-  #   groups:
-  #     minor-patch:
-  #       update-types: ["minor", "patch"]
   #
   # - package-ecosystem: "npm"
-  #   directory: "/"
-  #   schedule:
-  #     interval: "weekly"
-  #
-  # - package-ecosystem: "docker"
   #   directory: "/"
   #   schedule:
   #     interval: "weekly"

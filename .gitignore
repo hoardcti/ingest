@@ -140,6 +140,10 @@ bin/
 *.test
 *.out
 
+# Local raw-payload archive when HOARDCTI_ARCHIVE_BACKEND=fs. This holds
+# untouched upstream feed payloads, which can carry live malicious URLs.
+.archive/
+
 # ---------------------------------------------------------------------------
 # Rust
 # ---------------------------------------------------------------------------
