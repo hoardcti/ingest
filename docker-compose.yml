@@ -1,13 +1,19 @@
-# Local development stack: the two pieces of infrastructure the ingest service
-# needs, and nothing else. The service itself runs from `go run` so you get a
-# fast edit-build-run loop; `docker compose --profile full up` runs it in a
-# container too when you want to check the image.
+# Local development stack.
+#
+# The default `up` starts only the two things the ingest service cannot run
+# without. Everything else is behind a profile, so the common case stays cheap:
+#
+#   (default)            postgres, valkey
+#   --profile full       + the ingest service itself, containerised
+#   --profile metrics    + prometheus, scraping ingest
+#
+# Profiles compose, so `--profile full --profile metrics` gives you the lot.
 #
 #   docker compose up -d
 #   export HOARDCTI_DATABASE_URL=postgres://hoardcti:hoardcti@localhost:5432/hoardcti
 #   export HOARDCTI_REDIS_URL=redis://localhost:6379/0
 #   go run ./cmd/ingest migrate up
-#   go run ./cmd/ingest source add abuse-ch-urlhaus --name URLhaus
+#   go run ./cmd/ingest source add abuse-ch-urlhaus -name URLhaus
 #   go run ./cmd/ingest load contract/examples/indicator-batch.json
 
 name: hoardcti-ingest
@@ -92,7 +98,45 @@ services:
     # rather than applying it — see the note in cmd/ingest/main.go.
     command: ["serve"]
 
+  prometheus:
+    # Opt-in. `docker compose up` gives you the two things ingest cannot run
+    # without; metrics are for when you actually want to look at them.
+    #
+    #   docker compose --profile metrics up -d     (or: make metrics)
+    #
+    # Scrapes host.docker.internal:8080, so it works whether ingest is running
+    # in the `full` profile or from `make serve` on the host. See the comment in
+    # deploy/prometheus/prometheus.yml.
+    profiles: ["metrics"]
+    build:
+      context: ./deploy/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    # Docker Desktop resolves host.docker.internal on its own; on Linux it does
+    # not exist unless it is mapped explicitly. Without this the scrape target
+    # fails to resolve and the whole point of the profile is lost.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # A fortnight is plenty to answer "did that feed change last week?", and
+      # keeps a development volume from quietly growing for months.
+      - --storage.tsdb.retention.time=14d
+      # The expression browser and the graph tab are the analytics surface here;
+      # both need the web UI enabled, and lifecycle lets you reload rules
+      # without restarting: curl -XPOST localhost:9090/-/reload
+      - --web.enable-lifecycle
+
 volumes:
   postgres-data:
   valkey-data:
   archive-data:
+  prometheus-data:

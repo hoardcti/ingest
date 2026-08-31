@@ -1,0 +1,171 @@
+# Recording and alerting rules for the ingest service.
+#
+# The recording rules are the "analytics" half: the handful of expressions worth
+# graphing, precomputed so a dashboard is one query rather than four nested
+# aggregations. The alerting rules are the three failure modes from the README,
+# plus the ones you only notice at 3am.
+#
+# These are written for the development stack, so the thresholds are tuned to be
+# visible rather than quiet. Raise the `for:` durations before pointing an
+# Alertmanager at them.
+
+groups:
+  - name: hoardcti-ingest-analytics
+    interval: 30s
+    rules:
+      # Records written per second, by source and entity kind. The headline
+      # throughput number.
+      - record: hoardcti:records_ingested:rate5m
+        expr: sum by (source, kind) (rate(hoardcti_ingest_records_total[5m]))
+
+      # Observations per second, by source. Diverges from the above when feeds
+      # are mostly re-reporting things already known — which is the normal
+      # steady state, and worth being able to see.
+      - record: hoardcti:sightings:rate5m
+        expr: sum by (source) (rate(hoardcti_ingest_sightings_total[5m]))
+
+      # Proportion of records a source is losing to canonicalisation. NaN when a
+      # source is idle, which is what you want: an idle feed is not a failing one.
+      - record: hoardcti:records_dropped:ratio15m
+        expr: |
+          sum by (source) (rate(hoardcti_ingest_records_dropped_total[15m]))
+            /
+          (
+            sum by (source) (rate(hoardcti_ingest_records_dropped_total[15m]))
+            + sum by (source) (rate(hoardcti_ingest_records_total[15m]))
+          )
+
+      # How much of the envelope stream is redelivery. A steady few percent is
+      # the transport behaving normally; a sustained climb means consumers are
+      # dying after COMMIT but before acknowledging.
+      - record: hoardcti:envelopes:ratio_duplicate5m
+        expr: |
+          sum(rate(hoardcti_ingest_envelopes_total{outcome="duplicate"}[5m]))
+            /
+          clamp_min(sum(rate(hoardcti_ingest_envelopes_total[5m])), 1e-9)
+
+      - record: hoardcti:write_duration:p99_5m
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, source) (rate(hoardcti_ingest_write_duration_seconds_bucket[5m]))
+          )
+
+      - record: hoardcti:write_duration:p50_5m
+        expr: |
+          histogram_quantile(
+            0.5,
+            sum by (le, source) (rate(hoardcti_ingest_write_duration_seconds_bucket[5m]))
+          )
+
+  - name: hoardcti-ingest-alerts
+    rules:
+      - alert: IngestDown
+        expr: up{job="hoardcti-ingest"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Ingest service is not being scraped"
+          description: >-
+            Prometheus cannot reach the ingest service. Either it is down, or it
+            is running with -no-http, or HOARDCTI_HTTP_ADDR no longer matches the
+            target in prometheus.yml.
+
+      # The single most important signal: messages delivered but never
+      # acknowledged. A brief non-zero value is normal — that is just work in
+      # flight — so this only fires when it stays up.
+      - alert: IngestQueuePendingStuck
+        expr: hoardcti_ingest_queue_pending > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Envelopes have been unacknowledged for 15 minutes"
+          description: >-
+            {{ $value }} messages are delivered but unacknowledged. Sustained
+            growth means consumers are dying mid-batch and the same envelopes
+            are being reclaimed and retried. Check ingest_dead_letter and the
+            service logs.
+
+      - alert: IngestQueueBacklogGrowing
+        expr: hoardcti_ingest_queue_backlog > 1000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Queue backlog is not draining"
+          description: >-
+            {{ $value }} envelopes are waiting to be delivered. Collectors are
+            publishing faster than ingest is writing — raise
+            HOARDCTI_QUEUE_WORKERS (and DATABASE_MAX_CONNS with it), or find out
+            what is making writes slow.
+
+      # A rising drop rate on one source almost always means that feed changed
+      # its format. This is the alert that catches it before the next release.
+      - alert: IngestRecordsBeingDropped
+        expr: hoardcti:records_dropped:ratio15m > 0.05
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Source {{ $labels.source }} is losing records to canonicalisation"
+          description: >-
+            {{ $value | humanizePercentage }} of records from
+            {{ $labels.source }} are failing canonicalisation. This is what a
+            changed feed format looks like. The service logs the first few
+            failures with the values that caused them.
+
+      # The ratio above needs both a numerator and a denominator, so a source
+      # where *everything* fails produces no ratio at all. This catches that.
+      - alert: IngestSourceProducingNothingUsable
+        expr: |
+          sum by (source) (rate(hoardcti_ingest_records_dropped_total[15m])) > 0
+          unless
+          sum by (source) (rate(hoardcti_ingest_records_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Nothing from {{ $labels.source }} is surviving canonicalisation"
+          description: >-
+            Every record from {{ $labels.source }} is being dropped. The feed has
+            changed shape entirely, or the collector's field mapping is wrong.
+
+      - alert: IngestDeadLetters
+        expr: increase(hoardcti_ingest_envelopes_total{outcome="dead_letter"}[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Envelopes parked in the dead-letter table"
+          description: >-
+            {{ $value }} envelopes from {{ $labels.source }} were rejected in the
+            last hour. They are in ingest_dead_letter with the stage and reason
+            attached, and nothing will retry them.
+
+      # The cache is a projection, so this never fails ingest — which is exactly
+      # why it needs an alert of its own. Lookups quietly go stale otherwise.
+      - alert: IngestCacheWritesFailing
+        expr: rate(hoardcti_ingest_cache_failures_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Indicator cache write-through is failing"
+          description: >-
+            Ingest is still writing to Postgres, but the Redis lookup cache is
+            not being updated, so "is this IOC known?" is answering from stale
+            data. Check the Redis connection.
+
+      - alert: IngestWritesSlow
+        expr: hoardcti:write_duration:p99_5m > 30
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "p99 batch write for {{ $labels.source }} is over 30s"
+          description: >-
+            Batches from {{ $labels.source }} are taking {{ $value }}s at p99.
+            Each worker holds a transaction for the length of its batch, so this
+            starves the pool. Look for lock contention on entity, or envelopes
+            that have grown far larger than the rest.

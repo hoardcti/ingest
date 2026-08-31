@@ -126,6 +126,45 @@ would rewrite hundreds of millions of rows and leave the table needing a vacuum.
 - `hoardcti_ingest_envelopes_total{outcome="dead_letter"}` — envelopes parked in
   `ingest_dead_letter`, waiting for someone.
 
+### Metrics locally
+
+Prometheus is **opt-in**, behind a compose profile, so the default stack stays
+to the two things ingest cannot run without:
+
+```bash
+make metrics
+```
+
+That is `docker compose --profile metrics up -d --build prometheus`. It comes up
+on [localhost:9090](http://localhost:9090) — `/targets` to check the scrape,
+`/graph` for the expression browser.
+
+It scrapes `host.docker.internal:8080`, deliberately rather than the `ingest`
+service name, so the same config works whether you are running `make serve` on
+the host or `docker compose --profile full up`. Change the port there if you
+change `HOARDCTI_HTTP_ADDR`; `serve -no-http` exposes nothing to scrape at all.
+
+The config and rules live in `deploy/prometheus/` and are baked into a small
+image rather than bind-mounted, because bind mounts fail on any machine whose
+project drive is not shared with the container runtime. Rebuild after editing
+them, or `curl -XPOST localhost:9090/-/reload` for a rules-only change.
+
+`rules.yml` ships six recording rules — the expressions worth graphing,
+precomputed:
+
+| Rule | Answers |
+|---|---|
+| `hoardcti:records_ingested:rate5m` | Throughput, by source and kind |
+| `hoardcti:sightings:rate5m` | Observation rate, by source |
+| `hoardcti:records_dropped:ratio15m` | What proportion of a feed is failing to canonicalise |
+| `hoardcti:envelopes:ratio_duplicate5m` | How much of the stream is redelivery |
+| `hoardcti:write_duration:p50_5m` / `:p99_5m` | Batch write latency, by source |
+
+and eight alerts covering the metrics above plus dead letters, cache
+write-through failures, and slow writes. Thresholds are tuned to be visible on a
+development stack — raise the `for:` durations before pointing an Alertmanager
+at them.
+
 ## How it works
 
 ### Canonicalisation
@@ -193,9 +232,11 @@ remains would lose data quietly.
 
 ```bash
 make up                 # Postgres and Valkey
+make metrics            # + Prometheus, opt-in
 make check              # what CI runs, minus the database tests
 make test-integration   # everything, including the database tests
 make race               # under the race detector
+make down               # stop everything, profiles included
 ```
 
 The store tests are skipped without `HOARDCTI_TEST_DATABASE_URL`. They exercise
@@ -227,6 +268,7 @@ major version and a migration plan.
 cmd/ingest/          CLI: serve, migrate, source, maintain, submit, load, validate
 contract/            The cross-language envelope contract and worked examples
 db/                  Embedded goose migrations; the schema source of truth
+deploy/prometheus/   Opt-in metrics: scrape config, recording rules, alerts
 internal/
   archive/           Raw payload store, content-hash keyed (S3/R2, filesystem, none)
   cache/             Indicator lookup projection into Redis/Valkey

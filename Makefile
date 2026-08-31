@@ -72,13 +72,20 @@ check: fmt-check vet tidy-check test ## Everything CI runs, minus the database t
 up: ## Start Postgres and Valkey
 	docker compose up -d
 
+.PHONY: metrics
+metrics: ## Start Prometheus alongside the stack, scraping the ingest service
+	docker compose --profile metrics up -d --build prometheus
+	@echo "Prometheus: http://localhost:9090  (targets: /targets, graphs: /graph)"
+	@echo "It scrapes host.docker.internal:8080, so it works against 'make serve'"
+	@echo "or the containerised service. Rules: deploy/prometheus/rules.yml"
+
 .PHONY: down
-down: ## Stop the development stack
-	docker compose down
+down: ## Stop the development stack, including any profiles
+	docker compose --profile full --profile metrics down
 
 .PHONY: reset
 reset: ## Destroy the development stack and its data
-	docker compose down --volumes
+	docker compose --profile full --profile metrics down --volumes
 
 .PHONY: migrate
 migrate: ## Apply migrations to the development database

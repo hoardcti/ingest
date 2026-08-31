@@ -45,8 +45,13 @@ updates:
           - "patch"
 
   # The runtime base image and the development stack's Postgres and Valkey.
+  # Dependabot only scans the directories it is told about, so the Prometheus
+  # image — pinned by digest in deploy/prometheus/Dockerfile — needs its own
+  # entry or it will never be updated.
   - package-ecosystem: "docker"
-    directory: "/"
+    directories:
+      - "/"
+      - "/deploy/prometheus"
     schedule:
       interval: "weekly"
       day: "monday"
