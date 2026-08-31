@@ -1,0 +1,142 @@
+# Local development stack.
+#
+# The default `up` starts only the two things the ingest service cannot run
+# without. Everything else is behind a profile, so the common case stays cheap:
+#
+#   (default)            postgres, valkey
+#   --profile full       + the ingest service itself, containerised
+#   --profile metrics    + prometheus, scraping ingest
+#
+# Profiles compose, so `--profile full --profile metrics` gives you the lot.
+#
+#   docker compose up -d
+#   export HOARDCTI_DATABASE_URL=postgres://hoardcti:hoardcti@localhost:5432/hoardcti
+#   export HOARDCTI_REDIS_URL=redis://localhost:6379/0
+#   go run ./cmd/ingest migrate up
+#   go run ./cmd/ingest source add abuse-ch-urlhaus -name URLhaus
+#   go run ./cmd/ingest load contract/examples/indicator-batch.json
+
+name: hoardcti-ingest
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hoardcti
+      POSTGRES_PASSWORD: hoardcti
+      POSTGRES_DB: hoardcti
+      # Development only. Real deployments use scram-sha-256 and a secret.
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports:
+      - "5432:5432"
+    # No bind mounts. An init-script mount would be the obvious way to create
+    # the test database, but bind mounts fail outright on any machine whose
+    # project drive is not shared with the container runtime — `make test-db`
+    # creates it over the socket instead, which works everywhere.
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hoardcti -d hoardcti"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      # Ingest is write-heavy and bursty. These are development-scale values;
+      # they exist so local behaviour is not wildly different from production,
+      # not as a tuning recommendation.
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - work_mem=16MB
+
+  valkey:
+    # Valkey rather than Redis: same protocol, BSD licence, which matters for a
+    # GPL-3.0 project that may ship a deployment bundle.
+    image: valkey/valkey:8-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - valkey-data:/data
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    command:
+      # The stream is durable state until it is acknowledged, so it is worth an
+      # append-only file even in development.
+      - valkey-server
+      - --appendonly
+      - "yes"
+
+  ingest:
+    profiles: ["full"]
+    build:
+      context: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+    environment:
+      HOARDCTI_DATABASE_URL: postgres://hoardcti:hoardcti@postgres:5432/hoardcti
+      HOARDCTI_REDIS_URL: redis://valkey:6379/0
+      HOARDCTI_LOG_FORMAT: text
+      HOARDCTI_HTTP_ADDR: ":8080"
+      HOARDCTI_HTTP_TOKENS: dev-token
+      HOARDCTI_AUTO_REGISTER_SOURCES: "true"
+      HOARDCTI_ARCHIVE_BACKEND: fs
+      HOARDCTI_ARCHIVE_DIR: /var/lib/hoardcti/archive
+    ports:
+      - "8080:8080"
+    volumes:
+      - archive-data:/var/lib/hoardcti/archive
+    # Migrations are a deliberate separate step, so this waits for the schema
+    # rather than applying it — see the note in cmd/ingest/main.go.
+    command: ["serve"]
+
+  prometheus:
+    # Opt-in. `docker compose up` gives you the two things ingest cannot run
+    # without; metrics are for when you actually want to look at them.
+    #
+    #   docker compose --profile metrics up -d     (or: make metrics)
+    #
+    # Scrapes host.docker.internal:8080, so it works whether ingest is running
+    # in the `full` profile or from `make serve` on the host. See the comment in
+    # deploy/prometheus/prometheus.yml.
+    profiles: ["metrics"]
+    build:
+      context: ./deploy/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - prometheus-data:/prometheus
+    # Docker Desktop resolves host.docker.internal on its own; on Linux it does
+    # not exist unless it is mapped explicitly. Without this the scrape target
+    # fails to resolve and the whole point of the profile is lost.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      # A fortnight is plenty to answer "did that feed change last week?", and
+      # keeps a development volume from quietly growing for months.
+      - --storage.tsdb.retention.time=14d
+      # The expression browser and the graph tab are the analytics surface here;
+      # both need the web UI enabled, and lifecycle lets you reload rules
+      # without restarting: curl -XPOST localhost:9090/-/reload
+      - --web.enable-lifecycle
+
+volumes:
+  postgres-data:
+  valkey-data:
+  archive-data:
+  prometheus-data:

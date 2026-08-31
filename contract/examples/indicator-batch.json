@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "source": "abuse-ch-urlhaus",
+  "source_run_id": "01JG7Q2K4YB8N3XZP5M6R7T8V9",
+  "collected_at": "2026-08-31T06:15:00Z",
+  "content_hash": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "raw_ref": "s3://hoardcti-raw/raw/sha256/9f/86/9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+  "default_context": {
+    "tlp": "clear",
+    "confidence": 0.8,
+    "tags": ["malware-distribution"]
+  },
+  "records": [
+    {
+      "kind": "indicator",
+      "indicator": { "type": "url", "raw_value": "hxxp://malicious-download[.]example/payload.bin" },
+      "observed_at": "2026-08-31T06:14:12Z",
+      "context": {
+        "first_seen": "2026-08-29T11:02:00Z",
+        "last_seen": "2026-08-31T06:14:12Z",
+        "tags": ["cobalt-strike"],
+        "attributes": { "urlhaus_id": "3084112", "threat": "malware_download" }
+      }
+    },
+    {
+      "kind": "indicator",
+      "indicator": { "type": "domain", "raw_value": "malicious-download[.]example" }
+    },
+    {
+      "kind": "indicator",
+      "indicator": { "type": "ipv4", "raw_value": "185[.]234[.]1[.]7" }
+    },
+    {
+      "kind": "indicator",
+      "indicator": { "type": "sha256", "raw_value": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855" },
+      "context": { "confidence": 0.95 }
+    },
+    {
+      "kind": "indicator",
+      "indicator": { "type": "auto", "raw_value": "d41d8cd98f00b204e9800998ecf8427e" }
+    }
+  ],
+  "relationships": [
+    {
+      "source": { "kind": "indicator", "type": "url", "value": "hxxp://malicious-download[.]example/payload.bin" },
+      "target": { "kind": "indicator", "type": "domain", "value": "malicious-download[.]example" },
+      "type": "related-to",
+      "confidence": 1.0
+    },
+    {
+      "source": { "kind": "indicator", "type": "domain", "value": "malicious-download[.]example" },
+      "target": { "kind": "indicator", "type": "ipv4", "value": "185[.]234[.]1[.]7" },
+      "type": "related-to",
+      "metadata": { "resolution_method": "passive-dns" }
+    }
+  ]
+}

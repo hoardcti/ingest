@@ -29,6 +29,7 @@ jobs:
     outputs:
       python: ${{ steps.detect.outputs.python }}
       python_manifest: ${{ steps.detect.outputs.python_manifest }}
+      go: ${{ steps.detect.outputs.go }}
     steps:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -42,6 +43,13 @@ jobs:
             echo "python=true" >> "$GITHUB_OUTPUT"
           else
             echo "python=false" >> "$GITHUB_OUTPUT"
+          fi
+          # A go.mod is what makes the Go jobs meaningful; stray .go files in a
+          # docs directory are not a module.
+          if [ -f go.mod ]; then
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=false" >> "$GITHUB_OUTPUT"
           fi
           # pip-audit needs real declared dependencies to resolve. A pyproject.toml
           # carrying only tool configuration (as this template ships) has no
@@ -193,6 +201,141 @@ jobs:
           else
             pip-audit --strict
           fi
+
+  go-lint:
+    name: Lint Go
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::these files are not gofmt-clean:"
+            echo "$unformatted"
+            gofmt -d .
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # A go.mod that does not match the imports means someone committed a
+      # dependency change without the lockfile, and the next contributor's build
+      # will differ from CI's.
+      - name: go mod tidy is a no-op
+        run: go mod tidy -diff
+
+      - name: Build
+        run: go build ./...
+
+  go-test:
+    name: Test Go
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    # The write path is almost entirely SQL — partitioning, ON CONFLICT merges,
+    # COPY into a staging table — so it is tested against a real PostgreSQL.
+    # A mock would only assert that the mock matches itself.
+    #
+    # Images pinned by digest for the same supply-chain reason as the actions.
+    services:
+      postgres:
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 # 17-alpine
+        env:
+          POSTGRES_USER: hoardcti
+          POSTGRES_PASSWORD: hoardcti
+          POSTGRES_DB: hoardcti_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hoardcti -d hoardcti_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      valkey:
+        image: valkey/valkey@sha256:4934d214fd7e091d4ee77b398945b3fd62c6dd0ac71d8b79e2e3cbad8364f3b1 # 8-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # The race detector matters more than usual here: the ingest runner fans
+      # one queue reader out to a pool of workers sharing a connection pool, a
+      # source cache and a partition cache.
+      - name: Test
+        env:
+          HOARDCTI_TEST_DATABASE_URL: postgres://hoardcti:hoardcti@localhost:5432/hoardcti_test?sslmode=disable
+          HOARDCTI_TEST_REDIS_URL: redis://localhost:6379/0
+        run: go test -race -count=1 ./...
+
+      # The examples are what collector authors copy from. If they drift out of
+      # the contract, every new collector starts wrong.
+      - name: Validate the example envelopes
+        run: go run ./cmd/ingest validate contract/examples/*.json
+
+  go-audit:
+    name: Audit Go dependencies
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # govulncheck reports only vulnerabilities in code paths this binary
+      # actually reaches, so it produces far less noise than a manifest scanner
+      # and what it does report is worth acting on.
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
 
   scanner-tests:
     name: Secret scanner tests

@@ -1,0 +1,45 @@
+# Prometheus configuration for the local development stack.
+#
+# Baked into the image rather than bind-mounted, for the same reason the
+# Postgres service has no init-script mount: bind mounts fail outright on any
+# machine whose project drive is not shared with the container runtime, and a
+# development stack that only works on some people's laptops is worse than one
+# extra image build.
+#
+# Rebuild after editing:  docker compose --profile metrics build prometheus
+
+global:
+  # Ingest is bursty — a feed lands, thousands of rows go in, and it goes quiet.
+  # 15s is short enough to see the shape of a burst without turning a laptop
+  # into a time-series database.
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: development
+
+rule_files:
+  - /etc/prometheus/rules.yml
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  - job_name: hoardcti-ingest
+    # host.docker.internal, not the `ingest` service name, and deliberately so:
+    # this one target works whichever way you are running the service.
+    #
+    #   docker compose --profile full up   → ingest publishes 8080 on the host
+    #   make serve                         → ingest listens on the host directly
+    #
+    # Pointing at the container would break the second case, which is the one
+    # you are in while actually developing. The cost is one extra network hop
+    # that nobody will ever measure.
+    #
+    # Change the port here if you change HOARDCTI_HTTP_ADDR, and note that
+    # `serve -no-http` exposes no metrics at all — the target will simply be
+    # down.
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          service: ingest
