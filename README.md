@@ -1,22 +1,4 @@
-<!-- TEMPLATE:START -->
-> ### :package: You are looking at the hoardCTI repository template
->
-> This repository is the base template for every repository in the hoardCTI
-> organisation. It ships the security controls, review workflow, and community
-> health files that all our repositories are expected to have.
->
-> **Creating a new repository?** Use *Use this template* → then read
-> **[TEMPLATE.md](TEMPLATE.md)** for the setup checklist. Everything above the
-> line below is removed automatically on first push to your new repository.
->
-> **Changing the template itself?** See [CONTRIBUTING.md](CONTRIBUTING.md).
-> Changes here propagate to every repository created afterwards, so they get
-> the same review bar as production code.
-
----
-<!-- TEMPLATE:END -->
-
-# {{REPO_NAME}}
+# ingest
 
 <!-- TEMPLATE: one sentence describing what this repository does. -->
 
