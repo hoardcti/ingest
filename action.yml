@@ -1,0 +1,220 @@
+name: HoardCTI Ingest
+description: >-
+  Ingest HoardCTI envelopes produced by a collector, either by submitting them
+  to a running ingest service or by writing them straight to Postgres.
+author: hoardcti
+
+branding:
+  icon: database
+  color: purple
+
+# A composite action rather than a reusable workflow, because the envelope is a
+# file in the caller's workspace. A `workflow_call` job runs on its own runner
+# with its own empty workspace and cannot see files a previous job wrote, so a
+# path input would silently never resolve. This runs as a step inside the
+# collector's own job, right after the step that produced the envelope.
+#
+# .github/workflows/ingest.yml wraps this for the separate-job case, where the
+# envelope has to arrive as an artifact.
+
+inputs:
+  envelope:
+    description: >-
+      Path to the envelope JSON, relative to the workspace. Globs are expanded,
+      so "out/*.json" ingests a whole collection run. One pattern per line for
+      several — newline-separated rather than space-separated, so a file whose
+      name contains a space still works.
+    required: true
+
+  mode:
+    description: >-
+      submit   POST the envelope to a running ingest service (default).
+               Needs `endpoint` and `token`. The collector holds no database
+               credentials.
+      direct   Write to Postgres from this runner with `ingest load`. Needs
+               `database-url`. No long-running service required, but the
+               database has to accept connections from GitHub's runners.
+      validate Check the envelope against the contract and stop. Needs no
+               infrastructure at all — the right thing for a collector's own CI.
+    required: false
+    default: submit
+
+  endpoint:
+    description: "Base URL of the ingest service, e.g. https://ingest.example.org. Used by mode=submit."
+    required: false
+    default: ""
+
+  token:
+    description: "Bearer token for the submission endpoint. Used by mode=submit. Pass a secret, never a literal."
+    required: false
+    default: ""
+
+  database-url:
+    description: "Postgres connection string. Used by mode=direct. Pass a secret, never a literal."
+    required: false
+    default: ""
+
+  fail-on-duplicate:
+    description: >-
+      Fail the step when every envelope was already ingested. Off by default:
+      a collector re-running over unchanged upstream data is normal, not an
+      error.
+    required: false
+    default: "false"
+
+  fail-on-dropped:
+    description: >-
+      Fail the step if any record was dropped during canonicalisation. Off by
+      default, because a handful of malformed lines in a large feed is normal —
+      the service already rejects the envelope outright once the proportion
+      crosses HOARDCTI_INGEST_MAX_DROP_RATIO. Worth turning on for a feed you
+      expect to be clean.
+    required: false
+    default: "false"
+
+  archive-backend:
+    description: "Raw payload archive for mode=direct: none, s3 or fs."
+    required: false
+    default: "none"
+
+  archive-bucket:
+    description: "Bucket for archive-backend=s3."
+    required: false
+    default: ""
+
+  archive-endpoint:
+    description: "S3 API endpoint for archive-backend=s3, e.g. https://<account>.r2.cloudflarestorage.com."
+    required: false
+    default: ""
+
+  archive-access-key-id:
+    description: "Access key for archive-backend=s3. Pass a secret."
+    required: false
+    default: ""
+
+  archive-secret-access-key:
+    description: "Secret key for archive-backend=s3. Pass a secret."
+    required: false
+    default: ""
+
+  timeout:
+    description: "Per-envelope timeout in seconds for mode=submit."
+    required: false
+    default: "120"
+
+outputs:
+  envelopes:
+    description: "Number of envelope files processed."
+    value: ${{ steps.run.outputs.envelopes }}
+  accepted:
+    description: "Envelopes accepted (queued in submit mode, written in direct mode)."
+    value: ${{ steps.run.outputs.accepted }}
+  duplicates:
+    description: "Envelopes already ingested. Only meaningful in direct mode; submit mode cannot know yet."
+    value: ${{ steps.run.outputs.duplicates }}
+  records:
+    description: "Records written. Only populated in direct mode."
+    value: ${{ steps.run.outputs.records }}
+  sightings:
+    description: "Sightings appended. Only populated in direct mode."
+    value: ${{ steps.run.outputs.sightings }}
+  dropped:
+    description: "Records dropped during canonicalisation. Only populated in direct mode."
+    value: ${{ steps.run.outputs.dropped }}
+  result:
+    description: "Per-envelope results as a JSON array."
+    value: ${{ steps.run.outputs.result }}
+
+runs:
+  using: composite
+  steps:
+    # Every input reaches the shell through env, never through ${{ }}
+    # interpolation inside a run block. A source slug or file path that happens
+    # to contain a backtick would otherwise be executed by the runner.
+    - name: Check inputs
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ENDPOINT: ${{ inputs.endpoint }}
+        TOKEN: ${{ inputs.token }}
+        DATABASE_URL: ${{ inputs.database-url }}
+        ENVELOPE: ${{ inputs.envelope }}
+      run: |
+        set -euo pipefail
+
+        case "$MODE" in
+          submit|direct|validate) ;;
+          *) echo "::error::mode must be submit, direct or validate; got '$MODE'"; exit 1 ;;
+        esac
+
+        if [ -z "$ENVELOPE" ]; then
+          echo "::error::the 'envelope' input is required"
+          exit 1
+        fi
+
+        if [ "$MODE" = "submit" ]; then
+          [ -n "$ENDPOINT" ] || { echo "::error::mode=submit needs 'endpoint'"; exit 1; }
+          [ -n "$TOKEN" ]    || { echo "::error::mode=submit needs 'token'"; exit 1; }
+        fi
+        if [ "$MODE" = "direct" ]; then
+          [ -n "$DATABASE_URL" ] || { echo "::error::mode=direct needs 'database-url'"; exit 1; }
+        fi
+
+        # Belt and braces. Secrets passed through `with:` are masked by Actions
+        # already; a value assembled by the caller from parts may not be.
+        [ -n "$TOKEN" ] && echo "::add-mask::$TOKEN"
+        [ -n "$DATABASE_URL" ] && echo "::add-mask::$DATABASE_URL"
+        exit 0
+
+    # submit mode never builds anything: it is a POST, and the service runs the
+    # same validator on the other end. Keeping the common path free of a Go
+    # toolchain takes it from about forty seconds to about two.
+    - name: Restore cached ingest binary
+      if: inputs.mode != 'submit'
+      id: cache
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ runner.temp }}/hoardcti-ingest
+        key: hoardcti-ingest-${{ runner.os }}-${{ runner.arch }}-${{ github.action_ref || 'local' }}-${{ hashFiles(format('{0}/go.sum', github.action_path), format('{0}/go.mod', github.action_path)) }}
+
+    - name: Set up Go
+      if: inputs.mode != 'submit' && steps.cache.outputs.cache-hit != 'true'
+      uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+      with:
+        go-version-file: ${{ github.action_path }}/go.mod
+        cache: false
+
+    - name: Build ingest
+      if: inputs.mode != 'submit' && steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        BIN_DIR: ${{ runner.temp }}/hoardcti-ingest
+      run: |
+        set -euo pipefail
+        mkdir -p "$BIN_DIR"
+        cd "$ACTION_PATH"
+        # -trimpath so the cached binary does not embed a runner-specific path.
+        go build -trimpath -o "$BIN_DIR/ingest" ./cmd/ingest
+        "$BIN_DIR/ingest" version
+
+    - name: Ingest
+      id: run
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        ENVELOPE: ${{ inputs.envelope }}
+        ENDPOINT: ${{ inputs.endpoint }}
+        TOKEN: ${{ inputs.token }}
+        TIMEOUT: ${{ inputs.timeout }}
+        FAIL_ON_DUPLICATE: ${{ inputs.fail-on-duplicate }}
+        FAIL_ON_DROPPED: ${{ inputs.fail-on-dropped }}
+        BIN_DIR: ${{ runner.temp }}/hoardcti-ingest
+        HOARDCTI_DATABASE_URL: ${{ inputs.database-url }}
+        HOARDCTI_ARCHIVE_BACKEND: ${{ inputs.archive-backend }}
+        HOARDCTI_ARCHIVE_BUCKET: ${{ inputs.archive-bucket }}
+        HOARDCTI_ARCHIVE_ENDPOINT: ${{ inputs.archive-endpoint }}
+        HOARDCTI_ARCHIVE_ACCESS_KEY_ID: ${{ inputs.archive-access-key-id }}
+        HOARDCTI_ARCHIVE_SECRET_ACCESS_KEY: ${{ inputs.archive-secret-access-key }}
+        HOARDCTI_LOG_FORMAT: text
+      run: bash "${GITHUB_ACTION_PATH}/.github/actions-scripts/ingest.sh"

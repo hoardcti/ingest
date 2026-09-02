@@ -22,6 +22,33 @@ rules:
       # workflow, this suppression must be removed and the design revisited.
       - pr-size-check.yml
 
+  self-repository:
+    ignore:
+      # zizmor prefers `uses: $/…` over `uses: ./…`, and it is right about the
+      # principle: the workspace-relative form resolves against runtime
+      # filesystem state, so it could in theory load an action cloned by an
+      # earlier step. Two reasons it stays as it is for now.
+      #
+      # First, `$/` does not appear anywhere in GitHub's published workflow
+      # syntax reference. This action is the integration point every collector
+      # repository will depend on, and adopting an undocumented form there
+      # would break all of them at once if it is not universally available.
+      # Revisit when GitHub documents it — the change is one line per site.
+      #
+      # Second, neither use is the hazard the audit describes:
+      #
+      # ci.yml resolves `./` against this repository's own checkout, made by
+      # actions/checkout in the same job. There is no untrusted clone.
+      #
+      # ingest.yml is the reusable workflow, and its `./.hoardcti-ingest` does
+      # point at a runtime clone — but at a pinned one. The checkout names
+      # `repository: hoardcti/ingest` literally, and the ref comes from
+      # github.workflow_ref, which GitHub sets to this workflow's own ref. A
+      # caller chooses which version of the workflow to call and nothing else;
+      # it cannot redirect the checkout at another repository or ref.
+      - ci.yml
+      - ingest.yml
+
   artipacked:
     ignore:
       # template-cleanup.yml must keep the checkout credentials: it pushes the

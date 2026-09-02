@@ -1,0 +1,106 @@
+# A complete collector workflow. Copy this into a collector repository as
+# .github/workflows/collect.yml and replace the scrape step.
+#
+# Deliberately NOT in .github/workflows/ of this repository: anything there gets
+# run, and this is a template with a placeholder scrape step.
+#
+# The shape is: scrape on a schedule, produce one or more envelopes, hand them
+# to the ingest action in the same job. No artifact, no second runner, no
+# waiting — the envelope is a file in the workspace and the action is a step.
+#
+# `hoardcti/ingest@v1` below is written as a tag for readability. In a real
+# collector, pin it to a commit SHA with the version in a trailing comment, the
+# way this repository pins its own actions:
+#
+#   uses: hoardcti/ingest@<40-char-sha> # v1.2.3
+#
+# A tag can be moved; a SHA cannot. Dependabot understands the comment and will
+# keep the pin current.
+
+name: Collect
+
+on:
+  schedule:
+    # Every six hours, at seven minutes past. Off the hour on purpose: GitHub
+    # queues an enormous number of jobs at :00 and a scheduled run can be
+    # delayed by tens of minutes.
+    - cron: "7 */6 * * *"
+  workflow_dispatch:
+
+# Nothing here needs write access to the repository.
+permissions: {}
+
+concurrency:
+  # One collection at a time. Two overlapping runs of the same feed would both
+  # succeed — ingest deduplicates — but they would race for the same rows and
+  # waste a runner.
+  group: collect-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect and ingest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # ---------------------------------------------------------------------
+      # Replace this with your collector. Whatever it is written in, its only
+      # job is to emit envelopes matching contract/envelope-v1.schema.json.
+      #
+      # Report what the feed said; do not interpret it. Defanged values,
+      # mixed-case hashes and punycode domains are all handled once, inside the
+      # ingest service. A collector that normalises on its own is not helping —
+      # it is creating a second implementation that will drift from the first.
+      # ---------------------------------------------------------------------
+      - name: Scrape
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ./collect.py --out out/envelope.json
+
+      # Catches a broken field mapping before anything touches the database, and
+      # gives you the JSON path of every problem at once. Needs no credentials.
+      - name: Validate the envelope
+        uses: hoardcti/ingest@v1
+        with:
+          envelope: out/*.json
+          mode: validate
+
+      - name: Ingest
+        id: ingest
+        uses: hoardcti/ingest@v1
+        with:
+          envelope: out/*.json
+          # submit keeps the database private and the credential revocable.
+          # Switch to `direct` (with `database-url`) only if you have decided
+          # to give collector repositories a database credential.
+          mode: submit
+          endpoint: ${{ vars.HOARDCTI_INGEST_ENDPOINT }}
+          token: ${{ secrets.HOARDCTI_INGEST_TOKEN }}
+
+          # A feed you expect to be clean can insist on it. Leave this off for
+          # a messy upstream, where a few unparseable lines are routine and the
+          # service already rejects the envelope once too many fail.
+          fail-on-dropped: false
+
+      # The action writes a table to the job summary on its own. This is only
+      # useful if you want the numbers somewhere else — a metrics push, a Slack
+      # message, an issue comment.
+      - name: Report
+        if: always() && steps.ingest.outcome != 'skipped'
+        env:
+          ENVELOPES: ${{ steps.ingest.outputs.envelopes }}
+          ACCEPTED: ${{ steps.ingest.outputs.accepted }}
+          DUPLICATES: ${{ steps.ingest.outputs.duplicates }}
+          DROPPED: ${{ steps.ingest.outputs.dropped }}
+        run: |
+          echo "accepted $ACCEPTED of $ENVELOPES envelope(s)"
+          echo "$DUPLICATES already ingested, $DROPPED record(s) dropped"

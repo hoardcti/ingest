@@ -309,6 +309,132 @@ jobs:
       - name: Validate the example envelopes
         run: go run ./cmd/ingest validate contract/examples/*.json
 
+  action-test:
+    name: Test the ingest action
+    needs: detect
+    if: needs.detect.outputs.go == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+
+    # mode=direct writes to Postgres from the runner, which is exactly what a
+    # collector's workflow will be doing, so it is tested against a real one.
+    services:
+      postgres:
+        image: postgres@sha256:18cfe3ef5e6815560c98237d6216d1e5119702fb0f3894c8785dd58b8bbe5d73 # 17-alpine
+        env:
+          POSTGRES_USER: hoardcti
+          POSTGRES_PASSWORD: hoardcti
+          POSTGRES_DB: hoardcti_action
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U hoardcti -d hoardcti_action"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # The action's runtime is a shell script, so it gets linted like one.
+      - name: Lint the action script
+        uses: docker://koalaman/shellcheck@sha256:bb596a0d169b85ddd81d8b6d3a2ff6d5baf5fca10b97f575ebc647c3dff62b3d # stable
+        with:
+          args: .github/actions-scripts/ingest.sh
+
+      # Needs no infrastructure, so it is also what a collector runs in its own
+      # CI to check a feed mapping before anything is deployed.
+      - name: Action — validate mode
+        id: validate
+        uses: ./
+        with:
+          envelope: contract/examples/*.json
+          mode: validate
+
+      - name: Validate mode found every example
+        env:
+          ENVELOPES: ${{ steps.validate.outputs.envelopes }}
+          ACCEPTED: ${{ steps.validate.outputs.accepted }}
+        run: |
+          set -euo pipefail
+          [ "$ENVELOPES" = "3" ] || { echo "::error::envelopes=$ENVELOPES, want 3"; exit 1; }
+          [ "$ACCEPTED" = "3" ]  || { echo "::error::accepted=$ACCEPTED, want 3"; exit 1; }
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Apply the schema
+        env:
+          HOARDCTI_DATABASE_URL: postgres://hoardcti:hoardcti@localhost:5432/hoardcti_action?sslmode=disable
+        run: go run ./cmd/ingest migrate up
+
+      - name: Action — direct mode
+        id: direct
+        uses: ./
+        with:
+          envelope: contract/examples/*.json
+          mode: direct
+          database-url: postgres://hoardcti:hoardcti@localhost:5432/hoardcti_action?sslmode=disable
+        env:
+          # Sources are not preregistered in this throwaway database.
+          HOARDCTI_AUTO_REGISTER_SOURCES: "true"
+
+      - name: Direct mode wrote what it claimed
+        env:
+          ACCEPTED: ${{ steps.direct.outputs.accepted }}
+          RECORDS: ${{ steps.direct.outputs.records }}
+          DROPPED: ${{ steps.direct.outputs.dropped }}
+          RESULT: ${{ steps.direct.outputs.result }}
+        run: |
+          set -euo pipefail
+          echo "$RESULT" | jq .
+          [ "$ACCEPTED" = "3" ] || { echo "::error::accepted=$ACCEPTED, want 3"; exit 1; }
+          [ "$RECORDS" -gt 0 ]  || { echo "::error::records=$RECORDS, want more than 0"; exit 1; }
+          [ "$DROPPED" = "0" ]  || { echo "::error::dropped=$DROPPED, want 0"; exit 1; }
+
+      # At-least-once delivery means a collector will re-run over data it has
+      # already sent. That has to be a no-op, not a second set of sightings.
+      - name: Action — direct mode again is a no-op
+        id: replay
+        uses: ./
+        with:
+          envelope: contract/examples/*.json
+          mode: direct
+          database-url: postgres://hoardcti:hoardcti@localhost:5432/hoardcti_action?sslmode=disable
+
+      - name: Replay was recognised as duplicate
+        env:
+          DUPLICATES: ${{ steps.replay.outputs.duplicates }}
+          RECORDS: ${{ steps.replay.outputs.records }}
+        run: |
+          set -euo pipefail
+          [ "$DUPLICATES" = "3" ] || { echo "::error::duplicates=$DUPLICATES, want 3"; exit 1; }
+          [ "$RECORDS" = "0" ]    || { echo "::error::records=$RECORDS, want 0 — a replay wrote rows"; exit 1; }
+
+      # A collector pointed at a feed that has changed format must fail loudly,
+      # not ingest whatever survived.
+      - name: Action — a bad envelope fails the step
+        id: bad
+        continue-on-error: true
+        uses: ./
+        with:
+          envelope: .github/testdata/invalid-envelope.json
+          mode: validate
+
+      - name: The bad envelope did fail
+        if: steps.bad.outcome != 'failure'
+        run: |
+          echo "::error::an invalid envelope did not fail the action"
+          exit 1
+
   go-audit:
     name: Audit Go dependencies
     needs: detect
