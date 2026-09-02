@@ -1,0 +1,15 @@
+{
+  "_comment": "Deliberately invalid. CI feeds this to the action to prove that a malformed envelope fails the step rather than being quietly skipped. Three distinct problems: a source slug with spaces and capitals, an empty indicator value, and a CVE record carrying no cve payload.",
+  "schema_version": "1.0",
+  "source": "NOT A SLUG",
+  "collected_at": "2026-08-31T06:00:00Z",
+  "records": [
+    {
+      "kind": "indicator",
+      "indicator": { "type": "domain", "raw_value": "" }
+    },
+    {
+      "kind": "cve"
+    }
+  ]
+}

@@ -10,18 +10,26 @@ archives the raw payload, canonicalises every value exactly once, writes one
 transaction per envelope, and projects the result into the indicator lookup
 cache.
 
+Collectors run as GitHub Actions workflows and call this repository's action to
+hand their envelopes over. The action has two modes, and they differ in where
+the writing happens and therefore in what credentials a collector holds:
+
 ```
-Go / Python / Node collectors
-        │  envelope (contract/envelope-v1.schema.json)
-        ▼
-   Redis Streams
-        │
-        ▼
-  ingest service ──────────► object storage (raw archive, content-hash keyed)
-        │
-        ├──────────────────► Redis (indicator lookup cache)
-        ▼
-    PostgreSQL
+collector workflow (GitHub Actions)
+  scrape ──► envelope.json ──► hoardcti/ingest action
+                                     │
+              mode: submit ──────────┤                    mode: direct
+              (holds a bearer token) │        (holds the database URL)
+                                     ▼                          │
+                               Redis Streams                    │
+                                     │                          │
+                                     ▼                          │
+                            ingest service ◄────────────────────┘
+                                     │   same canonicaliser, same writer
+                                     ├──► object storage (raw archive)
+                                     ├──► Redis (indicator lookup cache)
+                                     ▼
+                                 PostgreSQL
 ```
 
 Two rules hold the design together.
@@ -31,11 +39,16 @@ Two rules hold the design together.
 file is the actual centre of the system; collectors in three languages generate
 their types from it.
 
-**Exactly one process writes to Postgres.** If Go, Python and Node each
+**Exactly one implementation writes to Postgres.** If Go, Python and Node each
 implemented their own defanging and hash normalisation, they would produce three
 subtly different answers, `UNIQUE (kind, canonical_key)` would quietly stop
-deduplicating, and nobody would notice for months. Collectors hold no database
-credentials and know nothing of the schema.
+deduplicating, and nobody would notice for months.
+
+Note *implementation*, not *process*. `mode: direct` runs the writer on the
+collector's own runner, so there may be many concurrent writers — but they are
+all the same binary, canonicalising identically, against a database whose unique
+constraints and idempotency claims are built for it. What must never happen is a
+second implementation of the rules.
 
 ## Installation
 
@@ -50,6 +63,110 @@ Or use the container image:
 ```bash
 docker build -t hoardcti/ingest .
 ```
+
+## Using it from a collector workflow
+
+Add the action as a step, straight after whatever produced the envelope:
+
+```yaml
+- name: Ingest
+  uses: hoardcti/ingest@v1
+  with:
+    envelope: out/*.json
+    endpoint: https://ingest.example.org
+    token: ${{ secrets.HOARDCTI_INGEST_TOKEN }}
+```
+
+A **composite action, not a reusable workflow**, and the reason matters: a
+`workflow_call` job runs on its own runner with its own empty workspace and
+cannot see files a previous job wrote. `envelope` is a path in *your* workspace,
+so the action has to run in the same job as the step that created it. If you
+genuinely want ingest as a separate job, see the reusable workflow below — it
+takes an artifact, because that is the only thing that crosses a job boundary.
+
+### Modes
+
+| Mode | What it does | What the collector holds |
+|---|---|---|
+| `submit` (default) | POSTs to the running ingest service | A bearer token |
+| `direct` | Writes to Postgres from the runner | The database URL |
+| `validate` | Checks against the contract and stops | Nothing at all |
+
+`validate` needs no infrastructure, which makes it the right thing to run on
+every pull request in a collector repository — a feed mapping is checked before
+it ever reaches the database:
+
+```yaml
+- uses: hoardcti/ingest@v1
+  with:
+    envelope: testdata/*.json
+    mode: validate
+```
+
+`direct` removes the need for a publicly reachable service, at the cost of
+giving every collector repository a database credential and requiring Postgres
+to accept connections from GitHub's runner ranges, which are broad. `submit`
+keeps the credential a revocable token and the database private. Start with
+`submit` unless you have a reason not to.
+
+### Inputs
+
+`envelope` is required. `mode` defaults to `submit`. `endpoint` and `token` are
+required for `submit`; `database-url` for `direct`. Globs are expanded, one
+pattern per line:
+
+```yaml
+with:
+  envelope: |
+    out/indicators/*.json
+    out/cves/*.json
+```
+
+Newline-separated rather than space-separated, so a file whose name contains a
+space still works. The full input list, including the `archive-*` options for
+`direct` mode, is in [`action.yml`](action.yml).
+
+### Outputs
+
+`envelopes`, `accepted`, `duplicates`, `records`, `sightings`, `relationships`,
+`dropped`, and `result` — the last being the per-envelope detail as JSON:
+
+```yaml
+- id: ingest
+  uses: hoardcti/ingest@v1
+  with: { envelope: out/*.json, mode: direct, database-url: "${{ secrets.DB_URL }}" }
+
+- run: echo "wrote ${{ steps.ingest.outputs.records }} records"
+```
+
+The step fails if any envelope is rejected, and writes a table to the job
+summary either way. It does **not** fail when every envelope turns out to be a
+duplicate — a collector re-running over unchanged upstream data is the normal
+case, not an error. `fail-on-duplicate: true` if you would rather know.
+
+### As a separate job
+
+```yaml
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - run: ./scrape.sh > envelope.json
+      - uses: actions/upload-artifact@v7
+        with: { name: envelopes, path: envelope.json }
+
+  ingest:
+    needs: scrape
+    uses: hoardcti/ingest/.github/workflows/ingest.yml@v1
+    with:
+      artifact: envelopes
+      endpoint: https://ingest.example.org
+    secrets:
+      token: ${{ secrets.HOARDCTI_INGEST_TOKEN }}
+```
+
+There is a complete, commented collector workflow in
+[`docs/collector-workflow-example.yml`](docs/collector-workflow-example.yml).
 
 ## Usage
 
@@ -83,6 +200,7 @@ curl -sS -X POST http://localhost:8080/v1/envelopes -H 'Authorization: Bearer de
 | `ingest submit <file>` | Publish an envelope to the queue |
 | `ingest load <file>` | Write an envelope directly, bypassing the queue |
 | `ingest validate <file>` | Check an envelope against the contract. Needs no database |
+| _all three above_ | Take `-json` for machine-readable output; the action parses it |
 | `ingest version` | Print the commit this binary was built from |
 
 `validate` needs nothing but the binary, which makes it the right thing to run
@@ -266,7 +384,9 @@ major version and a migration plan.
 
 ```
 cmd/ingest/          CLI: serve, migrate, source, maintain, submit, load, validate
+action.yml           The composite action collectors call from their workflows
 contract/            The cross-language envelope contract and worked examples
+docs/                A complete collector workflow to copy
 db/                  Embedded goose migrations; the schema source of truth
 deploy/prometheus/   Opt-in metrics: scrape config, recording rules, alerts
 internal/

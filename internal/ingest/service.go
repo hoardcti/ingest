@@ -158,6 +158,12 @@ func (s *Service) Process(ctx context.Context, raw []byte) (Result, error) {
 	res.Elapsed = time.Since(start)
 
 	if wr.Duplicate {
+		// Nothing was written, so nothing is reported as written. RecordsIn
+		// still says how big the envelope was; conflating the two would have
+		// the action's `records` output — and anyone reading it — believe a
+		// replay ingested everything a second time.
+		res.RecordsWritten = 0
+
 		s.opts.Metrics.ObserveEnvelope(e.Source, telemetry.OutcomeDuplicate)
 		s.log.Debug("envelope already processed",
 			"source", e.Source, "digest", digest, "records", len(e.Records))
